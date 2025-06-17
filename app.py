@@ -42,7 +42,7 @@ def generate_pdf():
 
 # ---------- Section Renderers ----------
 
-def render_table(section, section_index):
+def render_table(section, sheet_index, section_index):
     for entry_index, entry in enumerate(section.get("data", [])):
         header = entry.get("header")
         rows = entry.get("rows", [])
@@ -62,20 +62,23 @@ def render_table(section, section_index):
         df = pd.DataFrame(table_data)
         st.dataframe(df, use_container_width=True)
 
-        if st.button(f"➕ Add Table to PDF: {header or 'Unnamed'}", key=f"btn_table_{section_index}_{entry_index}"):
+        if st.button(
+            f"➕ Add Table to PDF: {header or 'Unnamed'}",
+            key=f"btn_table_{sheet_index}_{section_index}_{entry_index}"
+        ):
             add_text_to_pdf(df.to_string(index=False))
 
 
-def render_map_table(section, section_index):
+def render_map_table(section, sheet_index, section_index):
     rows = section.get("rows", [])
     df = pd.DataFrame([{r["name"]: r["v"]} for r in rows])
     st.dataframe(df, use_container_width=True)
 
-    if st.button("➕ Add Map Table to PDF", key=f"btn_maptable_{section_index}"):
+    if st.button("➕ Add Map Table to PDF", key=f"btn_maptable_{sheet_index}_{section_index}"):
         add_text_to_pdf(df.to_string(index=False))
 
 
-def render_pie_chart(section, section_index):
+def render_pie_chart(section, sheet_index, section_index):
     values = section.get("values", [])
     labels = [item["title"] for item in values]
     sizes = [item["raw"] for item in values]
@@ -86,12 +89,12 @@ def render_pie_chart(section, section_index):
     ax.axis("equal")
     st.pyplot(fig)
 
-    if st.button(f"➕ Add Pie Chart to PDF: {section.get('header', '')}", key=f"btn_pie_{section_index}"):
+    if st.button(f"➕ Add Pie Chart to PDF: {section.get('header', '')}", key=f"btn_pie_{sheet_index}_{section_index}"):
         img_buf = save_chart_as_image(fig)
         add_image_to_pdf(img_buf)
 
 
-def render_stacked_bar_chart(section, section_index):
+def render_stacked_bar_chart(section, sheet_index, section_index):
     data = section.get("data", [])
     series = section.get("series", [])
     x_labels = [item["x"]["v"] for item in data]
@@ -113,35 +116,35 @@ def render_stacked_bar_chart(section, section_index):
     ax.legend()
     st.pyplot(fig)
 
-    if st.button(f"➕ Add Stacked Bar Chart to PDF: {section.get('header', '')}", key=f"btn_stackbar_{section_index}"):
+    if st.button(f"➕ Add Stacked Bar Chart to PDF: {section.get('header', '')}", key=f"btn_stackbar_{sheet_index}_{section_index}"):
         img_buf = save_chart_as_image(fig)
         add_image_to_pdf(img_buf)
 
 
-def render_section(section, section_index):
+def render_section(section, sheet_index, section_index):
     section_type = section.get("type")
     if section_type == "table":
-        render_table(section, section_index)
+        render_table(section, sheet_index, section_index)
     elif section_type == "map_table":
-        render_map_table(section, section_index)
+        render_map_table(section, sheet_index, section_index)
     elif section_type == "pie_chart":
-        render_pie_chart(section, section_index)
+        render_pie_chart(section, sheet_index, section_index)
     elif section_type == "stacked_bar_chart":
-        render_stacked_bar_chart(section, section_index)
+        render_stacked_bar_chart(section, sheet_index, section_index)
     elif section_type == "separator":
         st.markdown("---")
-        if st.button("➕ Add Divider to PDF", key=f"btn_separator_{section_index}"):
+        if st.button("➕ Add Divider to PDF", key=f"btn_separator_{sheet_index}_{section_index}"):
             add_text_to_pdf("\n----------------------------\n")
     else:
         st.warning(f"Unsupported section type: {section_type}")
 
 
-def render_sheet(sheet):
+def render_sheet(sheet, sheet_index):
     st.header(f"📄 {sheet.get('header')}")
-    for i, section in enumerate(sheet.get("sections", [])):
+    for section_index, section in enumerate(sheet.get("sections", [])):
         if header := section.get("header"):
             st.subheader(header)
-        render_section(section, i)
+        render_section(section, sheet_index, section_index)
 
 
 def render_report(data):
@@ -153,8 +156,8 @@ def render_report(data):
     time_filter = report.get("time_filter", {})
     st.markdown(f"**Time Filter:** {time_filter.get('from')} – {time_filter.get('to')} | Weekdays: {time_filter.get('weekdays')}")
 
-    for sheet in report.get("sheets", []):
-        render_sheet(sheet)
+    for sheet_index, sheet in enumerate(report.get("sheets", [])):
+        render_sheet(sheet, sheet_index)
 
 # ---------- Main App ----------
 
