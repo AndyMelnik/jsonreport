@@ -1,45 +1,28 @@
+
 import streamlit as st
 import pandas as pd
 import json
+import io
 import matplotlib.pyplot as plt
 from fpdf import FPDF
-from io import BytesIO
 from PIL import Image
 
-# ---------- Sanitization ----------
+# Setup session state for selected visuals
+if "visuals" not in st.session_state:
+    st.session_state.visuals = []
+if "selected_visuals" not in st.session_state:
+    st.session_state.selected_visuals = set()
 
-def sanitize_text(text):
+def sanitize_text(text, encoding="latin-1", replacement="?"):
     if isinstance(text, str):
-        return text.encode("latin-1", errors="replace").decode("latin-1")
+        return text.encode(encoding, errors="replace").decode(encoding).replace("�", replacement)
     return str(text)
 
-# ---------- PDF Utilities ----------
-
 def save_chart_as_image(fig):
-    buf = BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches='tight')
     buf.seek(0)
     return buf
-
-def add_image_to_pdf(image_buf):
-    st.session_state.pdf_contents.append({"type": "image", "content": image_buf})
-
-def generate_pdf():
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.set_font("Arial", size=12)
-
-    for item in st.session_state.pdf_contents:
-        if item["type"] == "image":
-            pdf.add_page()
-            img = Image.open(item["content"])
-            tmp_path = "/tmp/tmp_image.png"
-            img.save(tmp_path)
-            pdf.image(tmp_path, x=10, y=20, w=180)
-
-    return pdf.output(dest="S").encode("latin-1", errors="replace")
-
-# ---------- Table Image Renderer ----------
 
 def df_to_image(df, title=None):
     num_rows, num_cols = df.shape
@@ -65,145 +48,150 @@ def df_to_image(df, title=None):
 
     return save_chart_as_image(fig)
 
-# ---------- Section Renderers ----------
+def add_table_to_gui_and_pdf(table_data, section_key, table_key, header):
+    rows = table_data.get("rows", [])
+    columns = table_data.get("columns", [])
+    if not rows or not columns:
+        return
 
-def render_table(section, sheet_idx, sec_idx):
-    for entry_idx, entry in enumerate(section.get("data", [])):
-        header = entry.get("header")
-        rows = entry.get("rows", [])
-        columns = section.get("columns", [])
+    headers = [sanitize_text(col.get("title", "")) for col in columns]
+    for group in rows:
+        visual_id = f"table_{section_key}_{table_key}_{group.get('header', '')}"
+        with st.expander(group.get("header", "Table")):
+            st.markdown(f"#### {header}")
+            data = []
+            for row in group["rows"]:
+                parsed_row = []
+                for col in columns:
+                    val = row.get(col["field"], {})
+                    parsed_row.append(val.get("v", ""))
+                data.append(parsed_row)
 
-        table_data = []
-        for row in rows:
-            row_data = {
-                sanitize_text(col.get("title") or col["field"]): sanitize_text(row.get(col["field"], {}).get("v", ""))
-                for col in columns
-            }
-            table_data.append(row_data)
+            df = pd.DataFrame(data, columns=headers)
+            st.dataframe(df)
 
-        df = pd.DataFrame(table_data)
-        if header:
-            st.markdown(f"**{sanitize_text(header)}**")
-        st.dataframe(df, use_container_width=True)
+            include = st.checkbox("Include in PDF", key=f"check_{visual_id}")
+            if include:
+                img_buf = df_to_image(df, title=group.get("header", "Table"))
+                st.session_state.visuals.append(("image", img_buf))
 
-        if st.button("➕ Add Table to PDF", key=f"table_{sheet_idx}_{sec_idx}_{entry_idx}"):
-            image_buf = df_to_image(df, title=header)
-            add_image_to_pdf(image_buf)
+def add_map_table_to_gui_and_pdf(map_table, section_key):
+    rows = map_table.get("rows", [])
+    if not rows:
+        return
 
+    data = []
+    labels = []
+    for row in rows:
+        labels.append(sanitize_text(row.get("name", "")))
+        data.append(sanitize_text(row.get("v", "")))
 
-def render_map_table(section, sheet_idx, sec_idx):
-    rows = section.get("rows", [])
-    df = pd.DataFrame([{sanitize_text(r["name"]): sanitize_text(r["v"])} for r in rows])
-    st.dataframe(df, use_container_width=True)
+    df = pd.DataFrame([data], columns=labels)
+    st.markdown(f"#### {map_table.get('header', 'Map Table')}")
+    st.dataframe(df.T)
 
-    if st.button("➕ Add Map Table to PDF", key=f"maptable_{sheet_idx}_{sec_idx}"):
-        image_buf = df_to_image(df, title=section.get("header", ""))
-        add_image_to_pdf(image_buf)
+    visual_id = f"map_table_{section_key}"
+    include = st.checkbox("Include in PDF", key=f"check_{visual_id}")
+    if include:
+        img_buf = df_to_image(df.T, title=map_table.get("header", "Map Table"))
+        st.session_state.visuals.append(("image", img_buf))
 
-
-def render_pie_chart(section, sheet_idx, sec_idx):
-    values = section.get("values", [])
-    labels = [sanitize_text(v["title"]) for v in values]
-    sizes = [v["raw"] for v in values]
-    colors = [v.get("color") for v in values]
+def add_pie_chart_to_gui_and_pdf(chart, section_key, chart_key):
+    labels = [sanitize_text(v["title"]) for v in chart["values"]]
+    sizes = [v["raw"] for v in chart["values"]]
+    colors = [v.get("color", None) for v in chart["values"]]
 
     fig, ax = plt.subplots()
-    ax.pie(sizes, labels=labels, colors=colors, autopct="%1.1f%%", startangle=140)
-    ax.axis("equal")
+    ax.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+    ax.axis('equal')
     st.pyplot(fig)
 
-    if st.button("➕ Add Pie Chart to PDF", key=f"pie_{sheet_idx}_{sec_idx}"):
-        add_image_to_pdf(save_chart_as_image(fig))
+    visual_id = f"pie_{section_key}_{chart_key}"
+    include = st.checkbox("Include in PDF", key=f"check_{visual_id}")
+    if include:
+        img_buf = save_chart_as_image(fig)
+        st.session_state.visuals.append(("image", img_buf))
 
-
-def render_stacked_bar_chart(section, sheet_idx, sec_idx):
-    data = section.get("data", [])
-    series = section.get("series", [])
-    x_labels = [sanitize_text(item["x"]["v"]) for item in data]
-    bar_data = {
-        s["field"]: [item["bars"][s["field"]]["raw"] for item in data] for s in series
-    }
-    df = pd.DataFrame(bar_data, index=x_labels)
-
+def add_stacked_bar_chart_to_gui_and_pdf(chart, section_key, chart_key):
+    data = chart["data"]
+    series = chart["series"]
+    labels = [d["x"]["v"] for d in data]
     fig, ax = plt.subplots()
-    bottom = None
-    for s in series:
-        values = df[s["field"]]
-        ax.bar(df.index, values, label=sanitize_text(s["title"]), color=s["color"], bottom=bottom)
-        bottom = values if bottom is None else bottom + values
 
-    y_label = sanitize_text(section.get("y_axis", {}).get("label", ""))
-    ax.set_ylabel(y_label)
-    ax.set_title(sanitize_text(section.get("header", "Stacked Bar Chart")))
+    bottoms = [0] * len(labels)
+    for s in series:
+        values = [d["bars"][s["field"]]["raw"] for d in data]
+        ax.bar(labels, values, bottom=bottoms, label=s["title"], color=s.get("color", None))
+        bottoms = [bottoms[i] + values[i] for i in range(len(values))]
+
+    ax.set_ylabel(chart.get("y_axis", {}).get("label", ""))
     ax.legend()
     st.pyplot(fig)
 
-    if st.button("➕ Add Stacked Bar Chart to PDF", key=f"stackbar_{sheet_idx}_{sec_idx}"):
-        add_image_to_pdf(save_chart_as_image(fig))
+    visual_id = f"bar_{section_key}_{chart_key}"
+    include = st.checkbox("Include in PDF", key=f"check_{visual_id}")
+    if include:
+        img_buf = save_chart_as_image(fig)
+        st.session_state.visuals.append(("image", img_buf))
 
-
-def render_section(section, sheet_idx, sec_idx):
-    sec_type = section.get("type")
-    if sec_type == "table":
-        render_table(section, sheet_idx, sec_idx)
-    elif sec_type == "map_table":
-        render_map_table(section, sheet_idx, sec_idx)
-    elif sec_type == "pie_chart":
-        render_pie_chart(section, sheet_idx, sec_idx)
-    elif sec_type == "stacked_bar_chart":
-        render_stacked_bar_chart(section, sheet_idx, sec_idx)
-    elif sec_type == "separator":
+def process_section(section, section_key, sheet_title):
+    section_type = section["type"]
+    if section_type == "table":
+        add_table_to_gui_and_pdf(section["data"], section_key, section.get("header", "0"), section.get("header", ""))
+    elif section_type == "map_table":
+        add_map_table_to_gui_and_pdf(section, section_key)
+    elif section_type == "pie_chart":
+        add_pie_chart_to_gui_and_pdf(section, section_key, section.get("header", "0"))
+    elif section_type == "stacked_bar_chart":
+        add_stacked_bar_chart_to_gui_and_pdf(section, section_key, section.get("header", "0"))
+    elif section_type == "separator":
         st.markdown("---")
-        if st.button("➕ Add Divider to PDF", key=f"sep_{sheet_idx}_{sec_idx}"):
-            df = pd.DataFrame([["----------------------------"]], columns=[" "])
-            add_image_to_pdf(df_to_image(df, title="Divider"))
-    else:
-        st.warning(f"Unsupported section type: {sec_type}")
 
+def generate_pdf():
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
 
-def render_sheet(sheet, sheet_idx):
-    st.header(f"📄 {sanitize_text(sheet.get('header', f'Sheet {sheet_idx + 1}'))}")
-    for sec_idx, section in enumerate(sheet.get("sections", [])):
-        header = section.get("header")
-        if header:
-            st.subheader(sanitize_text(header))
-        render_section(section, sheet_idx, sec_idx)
+    for content_type, content in st.session_state.visuals:
+        pdf.add_page()
+        if content_type == "image":
+            image = Image.open(content)
+            image_path = f"/tmp/img_{id(content)}.png"
+            image.save(image_path)
+            pdf.image(image_path, x=10, y=10, w=190)
 
+    pdf_output = io.BytesIO()
+    pdf.output(pdf_output)
+    pdf_output.seek(0)
+    return pdf_output
 
-def render_report(data):
-    report = data.get("report", {})
-    st.title(sanitize_text(report.get("title", "Report")))
-    st.markdown(f"**Created:** {sanitize_text(report.get('created'))}")
-    st.markdown(f"**Report ID:** {sanitize_text(report.get('id'))}")
-    tf = report.get("time_filter", {})
-    st.markdown(f"**Time Filter:** {tf.get('from')} – {tf.get('to')} | Weekdays: {tf.get('weekdays')}")
+# --- Streamlit App ---
+st.title("JSON Report Visualizer and Export to PDF")
 
-    for i, sheet in enumerate(report.get("sheets", [])):
-        render_sheet(sheet, i)
+uploaded_file = st.file_uploader("Upload JSON report file", type=["json"])
 
-# ---------- Main ----------
+if uploaded_file:
+    try:
+        report_json = json.load(uploaded_file)
+        report = report_json.get("report", {})
+        st.subheader(f"Report: {report.get('title', 'Untitled')}")
+        sheets = report.get("sheets", [])
 
-def main():
-    st.set_page_config(page_title="Report Viewer + PDF Export", layout="wide")
+        st.session_state.visuals = []  # Reset visuals list
 
-    if "pdf_contents" not in st.session_state:
-        st.session_state.pdf_contents = []
+        for sheet_idx, sheet in enumerate(sheets):
+            with st.expander(f"📄 Sheet: {sheet.get('header', f'Sheet {sheet_idx+1}')}"):
+                sections = sheet.get("sections", [])
+                for sec_idx, section in enumerate(sections):
+                    process_section(section, f"{sheet_idx}_{sec_idx}", sheet.get("header", ""))
 
-    st.sidebar.title("📁 Upload JSON Report")
-    uploaded_file = st.sidebar.file_uploader("Upload a JSON file", type="json")
+        if st.button("📥 Download PDF with selected visuals"):
+            pdf_file = generate_pdf()
+            st.download_button(
+                label="Download PDF",
+                data=pdf_file,
+                file_name="report.pdf",
+                mime="application/pdf"
+            )
 
-    if uploaded_file:
-        try:
-            json_data = json.load(uploaded_file)
-            render_report(json_data)
-
-            if st.session_state.pdf_contents:
-                pdf_data = generate_pdf()
-                st.download_button("📥 Download PDF Report", pdf_data, file_name="report.pdf", mime="application/pdf")
-        except Exception as e:
-            st.error(f"Failed to parse JSON: {e}")
-    else:
-        st.info("Upload a report JSON file to begin.")
-
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        st.error(f"Failed to parse JSON: {e}")
