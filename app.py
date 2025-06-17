@@ -1,26 +1,31 @@
 
 import streamlit as st
-import pandas as pd
 import json
-import io
+import pandas as pd
 import matplotlib.pyplot as plt
-from fpdf import FPDF
-from PIL import Image
+from io import BytesIO
+from reportlab.platypus import SimpleDocTemplate, Image, Spacer
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import inch
+from PIL import Image as PILImage
+import tempfile
+import uuid
 
-# Setup session state for selected visuals
-if "visuals" not in st.session_state:
-    st.session_state.visuals = []
+st.set_page_config(layout="wide")
+st.title("📊 JSON Report Visualizer & PDF Exporter")
+
+# Store visuals selected for PDF
 if "selected_visuals" not in st.session_state:
-    st.session_state.selected_visuals = set()
+    st.session_state.selected_visuals = {}
 
-def sanitize_text(text, encoding="latin-1", replacement="?"):
-    if isinstance(text, str):
-        return text.encode(encoding, errors="replace").decode(encoding).replace("�", replacement)
-    return str(text)
+# Helpers
+def sanitize_text(text):
+    return str(text).replace("\n", " ").replace("\r", "").strip()
 
 def save_chart_as_image(fig):
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches='tight')
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
     buf.seek(0)
     return buf
 
@@ -31,14 +36,7 @@ def df_to_image(df, title=None):
 
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     ax.axis('off')
-
-    table = ax.table(
-        cellText=df.values,
-        colLabels=df.columns,
-        cellLoc='center',
-        loc='center'
-    )
-
+    table = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
     table.auto_set_font_size(False)
     table.set_fontsize(8)
     table.scale(0.8, 0.8)
@@ -48,150 +46,115 @@ def df_to_image(df, title=None):
 
     return save_chart_as_image(fig)
 
-def add_table_to_gui_and_pdf(table_data, section_key, table_key, header):
-    rows = table_data.get("rows", [])
-    columns = table_data.get("columns", [])
-    if not rows or not columns:
-        return
-
-    headers = [sanitize_text(col.get("title", "")) for col in columns]
-    for group in rows:
-        visual_id = f"table_{section_key}_{table_key}_{group.get('header', '')}"
-        with st.expander(group.get("header", "Table")):
-            st.markdown(f"#### {header}")
-            data = []
-            for row in group["rows"]:
-                parsed_row = []
-                for col in columns:
-                    val = row.get(col["field"], {})
-                    parsed_row.append(val.get("v", ""))
-                data.append(parsed_row)
-
-            df = pd.DataFrame(data, columns=headers)
-            st.dataframe(df)
-
-            include = st.checkbox("Include in PDF", key=f"check_{visual_id}")
-            if include:
-                img_buf = df_to_image(df, title=group.get("header", "Table"))
-                st.session_state.visuals.append(("image", img_buf))
-
-def add_map_table_to_gui_and_pdf(map_table, section_key):
-    rows = map_table.get("rows", [])
-    if not rows:
-        return
-
-    data = []
-    labels = []
-    for row in rows:
-        labels.append(sanitize_text(row.get("name", "")))
-        data.append(sanitize_text(row.get("v", "")))
-
-    df = pd.DataFrame([data], columns=labels)
-    st.markdown(f"#### {map_table.get('header', 'Map Table')}")
-    st.dataframe(df.T)
-
-    visual_id = f"map_table_{section_key}"
-    include = st.checkbox("Include in PDF", key=f"check_{visual_id}")
-    if include:
-        img_buf = df_to_image(df.T, title=map_table.get("header", "Map Table"))
-        st.session_state.visuals.append(("image", img_buf))
-
-def add_pie_chart_to_gui_and_pdf(chart, section_key, chart_key):
-    labels = [sanitize_text(v["title"]) for v in chart["values"]]
-    sizes = [v["raw"] for v in chart["values"]]
-    colors = [v.get("color", None) for v in chart["values"]]
+def plot_pie_chart(values, title):
+    labels = [sanitize_text(item["title"]) for item in values]
+    sizes = [item["raw"] for item in values]
+    colors = [item.get("color", None) for item in values]
 
     fig, ax = plt.subplots()
-    ax.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-    ax.axis('equal')
-    st.pyplot(fig)
+    ax.pie(sizes, labels=labels, autopct='%1.1f%%', colors=colors, textprops={'fontsize': 8})
+    ax.set_title(sanitize_text(title), fontsize=10)
+    return save_chart_as_image(fig)
 
-    visual_id = f"pie_{section_key}_{chart_key}"
-    include = st.checkbox("Include in PDF", key=f"check_{visual_id}")
-    if include:
-        img_buf = save_chart_as_image(fig)
-        st.session_state.visuals.append(("image", img_buf))
+def plot_stacked_bar_chart(data, series, x_label, y_label):
+    dates = [x["x"]["v"] for x in data]
+    bar_data = {s["field"]: [x["bars"][s["field"]]["raw"] for x in data] for s in series}
+    colors = [s["color"] for s in series]
 
-def add_stacked_bar_chart_to_gui_and_pdf(chart, section_key, chart_key):
-    data = chart["data"]
-    series = chart["series"]
-    labels = [d["x"]["v"] for d in data]
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(10, 4))
+    bottom = [0] * len(dates)
+    for idx, s in enumerate(series):
+        ax.bar(dates, bar_data[s["field"]], bottom=bottom, label=s["title"], color=s["color"])
+        bottom = [i + j for i, j in zip(bottom, bar_data[s["field"]])]
 
-    bottoms = [0] * len(labels)
-    for s in series:
-        values = [d["bars"][s["field"]]["raw"] for d in data]
-        ax.bar(labels, values, bottom=bottoms, label=s["title"], color=s.get("color", None))
-        bottoms = [bottoms[i] + values[i] for i in range(len(values))]
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.legend(fontsize=8)
+    plt.xticks(rotation=45)
+    return save_chart_as_image(fig)
 
-    ax.set_ylabel(chart.get("y_axis", {}).get("label", ""))
-    ax.legend()
-    st.pyplot(fig)
-
-    visual_id = f"bar_{section_key}_{chart_key}"
-    include = st.checkbox("Include in PDF", key=f"check_{visual_id}")
-    if include:
-        img_buf = save_chart_as_image(fig)
-        st.session_state.visuals.append(("image", img_buf))
-
-def process_section(section, section_key, sheet_title):
-    section_type = section["type"]
-    if section_type == "table":
-        add_table_to_gui_and_pdf(section["data"], section_key, section.get("header", "0"), section.get("header", ""))
-    elif section_type == "map_table":
-        add_map_table_to_gui_and_pdf(section, section_key)
-    elif section_type == "pie_chart":
-        add_pie_chart_to_gui_and_pdf(section, section_key, section.get("header", "0"))
-    elif section_type == "stacked_bar_chart":
-        add_stacked_bar_chart_to_gui_and_pdf(section, section_key, section.get("header", "0"))
-    elif section_type == "separator":
-        st.markdown("---")
+def add_visual_to_pdf_elements(image_buf, pdf_elements):
+    with PILImage.open(image_buf) as img:
+        temp_img = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        img.save(temp_img.name)
+        pdf_elements.append(Image(temp_img.name, width=6.5*inch, preserveAspectRatio=True))
+        pdf_elements.append(Spacer(1, 0.2 * inch))
 
 def generate_pdf():
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf_elements = []
+    for visual_id, content in st.session_state.selected_visuals.items():
+        if content["include"]:
+            add_visual_to_pdf_elements(content["image"], pdf_elements)
+    if not pdf_elements:
+        st.warning("No visuals selected for PDF.")
+        return
+    pdf_path = Path(tempfile.gettempdir()) / f"report_{uuid.uuid4().hex}.pdf"
+    doc = SimpleDocTemplate(str(pdf_path), pagesize=A4)
+    doc.build(pdf_elements)
+    with open(pdf_path, "rb") as f:
+        st.download_button("📥 Download PDF", f, file_name="report.pdf", mime="application/pdf")
 
-    for content_type, content in st.session_state.visuals:
-        pdf.add_page()
-        if content_type == "image":
-            image = Image.open(content)
-            image_path = f"/tmp/img_{id(content)}.png"
-            image.save(image_path)
-            pdf.image(image_path, x=10, y=10, w=190)
-
-    pdf_output = io.BytesIO()
-    pdf.output(pdf_output)
-    pdf_output.seek(0)
-    return pdf_output
-
-# --- Streamlit App ---
-st.title("JSON Report Visualizer and Export to PDF")
-
-uploaded_file = st.file_uploader("Upload JSON report file", type=["json"])
-
+# Main
+uploaded_file = st.file_uploader("Upload JSON Report", type=["json"])
 if uploaded_file:
     try:
-        report_json = json.load(uploaded_file)
-        report = report_json.get("report", {})
-        st.subheader(f"Report: {report.get('title', 'Untitled')}")
-        sheets = report.get("sheets", [])
-
-        st.session_state.visuals = []  # Reset visuals list
-
-        for sheet_idx, sheet in enumerate(sheets):
-            with st.expander(f"📄 Sheet: {sheet.get('header', f'Sheet {sheet_idx+1}')}"):
-                sections = sheet.get("sections", [])
-                for sec_idx, section in enumerate(sections):
-                    process_section(section, f"{sheet_idx}_{sec_idx}", sheet.get("header", ""))
-
-        if st.button("📥 Download PDF with selected visuals"):
-            pdf_file = generate_pdf()
-            st.download_button(
-                label="Download PDF",
-                data=pdf_file,
-                file_name="report.pdf",
-                mime="application/pdf"
-            )
-
+        raw = uploaded_file.read()
+        decoded = raw.decode("utf-8", errors="replace")
+        report_data = json.loads(decoded)
     except Exception as e:
         st.error(f"Failed to parse JSON: {e}")
+        st.stop()
+
+    report = report_data.get("report", {})
+    st.header(sanitize_text(report.get("title", "Report")))
+
+    for sheet_idx, sheet in enumerate(report.get("sheets", [])):
+        with st.expander(f"📄 Sheet: {sanitize_text(sheet.get('header', 'Unnamed Sheet'))}", expanded=True):
+            for section_idx, section in enumerate(sheet.get("sections", [])):
+                if not isinstance(section, dict):
+                    continue
+                section_type = section.get("type", "")
+                visual_id = f"{section_type}_{sheet_idx}_{section_idx}"
+
+                if section_type == "table":
+                    data = section.get("data", [])
+                    for group_idx, group in enumerate(data):
+                        group_header = sanitize_text(group.get("header", f"Table {group_idx+1}"))
+                        rows = group.get("rows", [])
+                        if not rows:
+                            continue
+                        df = pd.DataFrame([{col: sanitize_text(str(cell.get("v", ""))) for col, cell in row.items()} for row in rows])
+                        st.subheader(group_header)
+                        st.dataframe(df)
+
+                        img = df_to_image(df, group_header)
+                        st.checkbox("Include in PDF", key=visual_id + f"_g{group_idx}", on_change=lambda v=visual_id, g=group_idx, i=img: st.session_state.selected_visuals.update({f"{v}_g{g}": {"include": st.session_state[f"{v}_g{g}"], "image": i}}))
+
+                elif section_type == "map_table":
+                    df = pd.DataFrame([{col["name"]: col.get("v", "") for col in section.get("rows", [])}])
+                    st.subheader(sanitize_text(section.get("header", "Map Table")))
+                    st.dataframe(df.T)
+                    img = df_to_image(df.T, section.get("header", ""))
+                    st.checkbox("Include in PDF", key=visual_id, on_change=lambda v=visual_id, i=img: st.session_state.selected_visuals.update({v: {"include": st.session_state[v], "image": i}}))
+
+                elif section_type == "pie_chart":
+                    values = section.get("values", [])
+                    if values:
+                        st.subheader(sanitize_text(section.get("header", "Pie Chart")))
+                        img = plot_pie_chart(values, section.get("header", ""))
+                        st.image(img, caption="Pie Chart")
+                        st.checkbox("Include in PDF", key=visual_id, on_change=lambda v=visual_id, i=img: st.session_state.selected_visuals.update({v: {"include": st.session_state[v], "image": i}}))
+
+                elif section_type == "stacked_bar_chart":
+                    st.subheader(sanitize_text(section.get("header", "Stacked Bar Chart")))
+                    data = section.get("data", [])
+                    series = section.get("series", [])
+                    x_label = section.get("x_label", "")
+                    y_label = section.get("y_axis", {}).get("label", "")
+                    if data and series:
+                        img = plot_stacked_bar_chart(data, series, x_label, y_label)
+                        st.image(img, caption="Stacked Bar Chart")
+                        st.checkbox("Include in PDF", key=visual_id, on_change=lambda v=visual_id, i=img: st.session_state.selected_visuals.update({v: {"include": st.session_state[v], "image": i}}))
+
+    st.markdown("---")
+    st.button("📥 Generate PDF from Selected Visuals", on_click=generate_pdf)
