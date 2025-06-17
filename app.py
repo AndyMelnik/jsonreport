@@ -2,7 +2,45 @@ import streamlit as st
 import pandas as pd
 import json
 import matplotlib.pyplot as plt
+from fpdf import FPDF
+from io import BytesIO
+from PIL import Image
 
+# ---------- PDF Utility Functions ----------
+
+def save_chart_as_image(fig):
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    return buf
+
+def add_text_to_pdf(text):
+    st.session_state.pdf_contents.append({"type": "text", "content": text})
+
+def add_image_to_pdf(image_buf):
+    st.session_state.pdf_contents.append({"type": "image", "content": image_buf})
+
+def generate_pdf():
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    for item in st.session_state.pdf_contents:
+        if item["type"] == "text":
+            pdf.add_page()
+            pdf.set_font("Arial", size=12)
+            pdf.multi_cell(0, 10, item["content"])
+        elif item["type"] == "image":
+            pdf.add_page()
+            img = Image.open(item["content"])
+            temp_path = "/tmp/temp_img.png"
+            img.save(temp_path)
+            pdf.image(temp_path, x=10, y=20, w=180)
+
+    output = BytesIO()
+    pdf.output(output)
+    return output
+
+# ---------- Section Renderers ----------
 
 def render_table(section):
     for entry in section.get("data", []):
@@ -21,13 +59,20 @@ def render_table(section):
 
         if header:
             st.markdown(f"**{header}**")
-        st.dataframe(pd.DataFrame(table_data), use_container_width=True)
+        df = pd.DataFrame(table_data)
+        st.dataframe(df, use_container_width=True)
+
+        if st.button(f"➕ Add Table to PDF: {header or 'Unnamed Section'}"):
+            add_text_to_pdf(df.to_string(index=False))
 
 
 def render_map_table(section):
     rows = section.get("rows", [])
-    data = {row["name"]: row["v"] for row in rows}
-    st.dataframe(pd.DataFrame(data.items(), columns=["Metric", "Value"]), use_container_width=True)
+    df = pd.DataFrame([{r["name"]: r["v"]} for r in rows])
+    st.dataframe(df, use_container_width=True)
+
+    if st.button(f"➕ Add Map Table to PDF: {section.get('header', 'Map Table')}"):
+        add_text_to_pdf(df.to_string(index=False))
 
 
 def render_pie_chart(section):
@@ -41,11 +86,14 @@ def render_pie_chart(section):
     ax.axis("equal")
     st.pyplot(fig)
 
+    if st.button(f"➕ Add Pie Chart to PDF: {section.get('header', '')}"):
+        img_buf = save_chart_as_image(fig)
+        add_image_to_pdf(img_buf)
+
 
 def render_stacked_bar_chart(section):
     data = section.get("data", [])
     series = section.get("series", [])
-
     x_labels = [item["x"]["v"] for item in data]
     bar_data = {s["field"]: [item["bars"][s["field"]]["raw"] for item in data] for s in series}
     bar_labels = [s["title"] for s in series]
@@ -65,6 +113,10 @@ def render_stacked_bar_chart(section):
     ax.legend()
     st.pyplot(fig)
 
+    if st.button(f"➕ Add Stacked Bar Chart to PDF: {section.get('header', '')}"):
+        img_buf = save_chart_as_image(fig)
+        add_image_to_pdf(img_buf)
+
 
 def render_section(section):
     section_type = section.get("type")
@@ -78,6 +130,8 @@ def render_section(section):
         render_stacked_bar_chart(section)
     elif section_type == "separator":
         st.markdown("---")
+        if st.button("➕ Add Divider to PDF"):
+            add_text_to_pdf("\n----------------------------\n")
     else:
         st.warning(f"Unsupported section type: {section_type}")
 
@@ -102,8 +156,14 @@ def render_report(data):
     for sheet in report.get("sheets", []):
         render_sheet(sheet)
 
+# ---------- Main App ----------
 
 def main():
+    st.set_page_config(page_title="Report Viewer & PDF Export", layout="wide")
+
+    if "pdf_contents" not in st.session_state:
+        st.session_state.pdf_contents = []
+
     st.sidebar.title("📁 Upload JSON Report")
     uploaded_file = st.sidebar.file_uploader("Upload a JSON file", type=["json"])
 
@@ -111,11 +171,14 @@ def main():
         try:
             json_data = json.load(uploaded_file)
             render_report(json_data)
+
+            if st.session_state.pdf_contents:
+                pdf_data = generate_pdf()
+                st.download_button("📥 Download PDF Report", pdf_data.getvalue(), file_name="report.pdf", mime="application/pdf")
         except Exception as e:
             st.error(f"Failed to parse JSON: {e}")
     else:
         st.info("Please upload a report JSON to begin.")
-
 
 if __name__ == "__main__":
     main()
