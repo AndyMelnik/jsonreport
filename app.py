@@ -6,10 +6,10 @@ from fpdf import FPDF
 from io import BytesIO
 from PIL import Image
 
-# ---------- Sanitize ----------
+# ---------- Sanitization ----------
 
 def sanitize_text(text):
-    """Replace unsupported characters with '?' for Latin-1 compatibility."""
+    """Ensure text is safely encodable in latin-1 (used by FPDF)."""
     if isinstance(text, str):
         return text.encode("latin-1", errors="replace").decode("latin-1")
     return str(text)
@@ -23,11 +23,10 @@ def save_chart_as_image(fig):
     return buf
 
 def add_text_to_pdf(text):
-    cleaned = sanitize_text(text)
-    st.session_state.pdf_contents.append({"type": "text", "content": cleaned})
+    st.session_state.pdf_contents.append({"type": "text", "content": sanitize_text(text)})
 
-def add_image_to_pdf(img_buf):
-    st.session_state.pdf_contents.append({"type": "image", "content": img_buf})
+def add_image_to_pdf(image_buf):
+    st.session_state.pdf_contents.append({"type": "image", "content": image_buf})
 
 def generate_pdf():
     pdf = FPDF()
@@ -41,16 +40,17 @@ def generate_pdf():
         elif item["type"] == "image":
             pdf.add_page()
             img = Image.open(item["content"])
-            temp_path = "/tmp/temp_chart.png"
+            temp_path = "/tmp/tmp_chart.png"
             img.save(temp_path)
             pdf.image(temp_path, x=10, y=20, w=180)
 
+    # ✅ Safe encoding
     return pdf.output(dest="S").encode("latin-1", errors="replace")
 
 # ---------- Renderers ----------
 
-def render_table(section, sheet_i, sec_i):
-    for entry_i, entry in enumerate(section.get("data", [])):
+def render_table(section, sheet_idx, sec_idx):
+    for entry_idx, entry in enumerate(section.get("data", [])):
         header = entry.get("header")
         rows = entry.get("rows", [])
         columns = section.get("columns", [])
@@ -68,20 +68,20 @@ def render_table(section, sheet_i, sec_i):
         df = pd.DataFrame(table_data)
         st.dataframe(df, use_container_width=True)
 
-        if st.button("➕ Add Table to PDF", key=f"table_{sheet_i}_{sec_i}_{entry_i}"):
+        if st.button("➕ Add Table to PDF", key=f"table_{sheet_idx}_{sec_idx}_{entry_idx}"):
             add_text_to_pdf(df.to_string(index=False))
 
 
-def render_map_table(section, sheet_i, sec_i):
+def render_map_table(section, sheet_idx, sec_idx):
     rows = section.get("rows", [])
     df = pd.DataFrame([{sanitize_text(r["name"]): sanitize_text(r["v"])} for r in rows])
     st.dataframe(df, use_container_width=True)
 
-    if st.button("➕ Add Map Table to PDF", key=f"map_{sheet_i}_{sec_i}"):
+    if st.button("➕ Add Map Table to PDF", key=f"map_{sheet_idx}_{sec_idx}"):
         add_text_to_pdf(df.to_string(index=False))
 
 
-def render_pie_chart(section, sheet_i, sec_i):
+def render_pie_chart(section, sheet_idx, sec_idx):
     values = section.get("values", [])
     labels = [sanitize_text(v["title"]) for v in values]
     sizes = [v["raw"] for v in values]
@@ -92,11 +92,11 @@ def render_pie_chart(section, sheet_i, sec_i):
     ax.axis("equal")
     st.pyplot(fig)
 
-    if st.button("➕ Add Pie Chart to PDF", key=f"pie_{sheet_i}_{sec_i}"):
+    if st.button("➕ Add Pie Chart to PDF", key=f"pie_{sheet_idx}_{sec_idx}"):
         add_image_to_pdf(save_chart_as_image(fig))
 
 
-def render_stacked_bar_chart(section, sheet_i, sec_i):
+def render_stacked_bar_chart(section, sheet_idx, sec_idx):
     data = section.get("data", [])
     series = section.get("series", [])
     x_labels = [sanitize_text(item["x"]["v"]) for item in data]
@@ -107,46 +107,46 @@ def render_stacked_bar_chart(section, sheet_i, sec_i):
 
     fig, ax = plt.subplots()
     bottom = None
-    for i, s in enumerate(series):
+    for s in series:
         values = df[s["field"]]
         ax.bar(df.index, values, label=sanitize_text(s["title"]), color=s["color"], bottom=bottom)
         bottom = values if bottom is None else bottom + values
 
-    ax.set_ylabel(sanitize_text(section.get("y_axis", {}).get("label", "")))
+    y_label = sanitize_text(section.get("y_axis", {}).get("label", ""))
+    ax.set_ylabel(y_label)
     ax.set_title(sanitize_text(section.get("header", "Stacked Bar Chart")))
     ax.legend()
     st.pyplot(fig)
 
-    if st.button("➕ Add Stacked Bar Chart to PDF", key=f"stack_{sheet_i}_{sec_i}"):
+    if st.button("➕ Add Stacked Bar Chart to PDF", key=f"stackbar_{sheet_idx}_{sec_idx}"):
         add_image_to_pdf(save_chart_as_image(fig))
 
 
-def render_section(section, sheet_i, sec_i):
-    st.markdown(f"---")
+def render_section(section, sheet_idx, sec_idx):
     sec_type = section.get("type")
     if sec_type == "table":
-        render_table(section, sheet_i, sec_i)
+        render_table(section, sheet_idx, sec_idx)
     elif sec_type == "map_table":
-        render_map_table(section, sheet_i, sec_i)
+        render_map_table(section, sheet_idx, sec_idx)
     elif sec_type == "pie_chart":
-        render_pie_chart(section, sheet_i, sec_i)
+        render_pie_chart(section, sheet_idx, sec_idx)
     elif sec_type == "stacked_bar_chart":
-        render_stacked_bar_chart(section, sheet_i, sec_i)
+        render_stacked_bar_chart(section, sheet_idx, sec_idx)
     elif sec_type == "separator":
         st.markdown("---")
-        if st.button("➕ Add Divider to PDF", key=f"sep_{sheet_i}_{sec_i}"):
+        if st.button("➕ Add Divider to PDF", key=f"sep_{sheet_idx}_{sec_idx}"):
             add_text_to_pdf("\n----------------------------\n")
     else:
         st.warning(f"Unsupported section type: {sec_type}")
 
 
-def render_sheet(sheet, sheet_i):
-    st.header(f"📄 {sanitize_text(sheet.get('header', f'Sheet {sheet_i+1}'))}")
-    for sec_i, section in enumerate(sheet.get("sections", [])):
+def render_sheet(sheet, sheet_idx):
+    st.header(f"📄 {sanitize_text(sheet.get('header', f'Sheet {sheet_idx + 1}'))}")
+    for sec_idx, section in enumerate(sheet.get("sections", [])):
         header = section.get("header")
         if header:
             st.subheader(sanitize_text(header))
-        render_section(section, sheet_i, sec_i)
+        render_section(section, sheet_idx, sec_idx)
 
 
 def render_report(data):
@@ -169,7 +169,7 @@ def main():
         st.session_state.pdf_contents = []
 
     st.sidebar.title("📁 Upload JSON Report")
-    uploaded_file = st.sidebar.file_uploader("Upload a JSON file", type=["json"])
+    uploaded_file = st.sidebar.file_uploader("Upload a JSON file", type="json")
 
     if uploaded_file:
         try:
@@ -177,8 +177,8 @@ def main():
             render_report(json_data)
 
             if st.session_state.pdf_contents:
-                pdf_bytes = generate_pdf()
-                st.download_button("📥 Download PDF Report", pdf_bytes, file_name="report.pdf", mime="application/pdf")
+                pdf_data = generate_pdf()
+                st.download_button("📥 Download PDF Report", pdf_data, file_name="report.pdf", mime="application/pdf")
         except Exception as e:
             st.error(f"Failed to parse JSON: {e}")
     else:
