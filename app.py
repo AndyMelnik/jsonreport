@@ -11,8 +11,23 @@ from reportlab.lib.units import inch
 import uuid
 
 st.set_page_config(layout="wide")
-
 st.title("📊 JSON Report Visualizer")
+
+def deduplicate_columns(columns):
+    seen = {}
+    result = []
+    for col in columns:
+        title = col.get("title", col.get("field", "")).strip()
+        if not title:
+            title = col.get("field", "")
+        new_title = title
+        count = 1
+        while new_title in seen:
+            new_title = f"{title}_{count}"
+            count += 1
+        seen[new_title] = True
+        result.append(new_title)
+    return result
 
 def render_table(rows, columns):
     data = []
@@ -22,17 +37,17 @@ def render_table(rows, columns):
             val = row.get(col["field"], {})
             r.append(val.get("v", ""))
         data.append(r)
-    headers = [col["title"] for col in columns]
+    headers = deduplicate_columns(columns)
     return pd.DataFrame(data, columns=headers)
 
 def render_map_table(rows):
     data = {item["name"]: item["v"] for item in rows}
     return pd.DataFrame([data])
 
-def render_pie_chart(values, header, chart_id):
+def render_pie_chart(values):
     labels = [v["title"] for v in values]
     sizes = [v["raw"] for v in values]
-    colors = [v["color"] for v in values]
+    colors = [v.get("color", "#cccccc") for v in values]
     fig, ax = plt.subplots()
     ax.pie(sizes, labels=labels, colors=colors, autopct="%1.1f%%", startangle=90)
     ax.axis("equal")
@@ -42,13 +57,13 @@ def render_pie_chart(values, header, chart_id):
     buf.seek(0)
     return buf
 
-def render_stacked_bar(data, series, header, chart_id):
+def render_stacked_bar(data, series):
     dates = [d["x"]["v"] for d in data]
     values = {s["field"]: [d["bars"][s["field"]]["raw"] for d in data] for s in series}
     fig, ax = plt.subplots()
     bottom = [0] * len(dates)
     for s in series:
-        ax.bar(dates, values[s["field"]], bottom=bottom, label=s["title"], color=s["color"])
+        ax.bar(dates, values[s["field"]], bottom=bottom, label=s["title"], color=s.get("color"))
         bottom = [bottom[i] + values[s["field"]][i] for i in range(len(dates))]
     ax.set_ylabel("Hours")
     ax.legend()
@@ -70,24 +85,26 @@ if uploaded_file:
     st.header(report.get("title", "Untitled Report"))
 
     pdf_buffers = []
-    inclusion_flags = []
 
     for i, sheet in enumerate(report.get("sheets", [])):
         st.subheader(sheet.get("header", f"Sheet {i+1}"))
         for j, section in enumerate(sheet.get("sections", [])):
             s_type = section.get("type")
             header = section.get("header", "")
-            unique_prefix = f"{i}_{j}_{uuid.uuid4().hex[:8]}"
+            unique_prefix = f"{i}_{j}_{uuid.uuid4().hex[:6]}"
 
             if s_type == "table":
-                for data_group in section["data"]:
+                for data_group in section.get("data", []):
                     rows = data_group.get("rows", [])
                     columns = section["columns"]
                     df = render_table(rows, columns)
                     st.markdown(f"**{data_group.get('header', '')}**")
-                    st.dataframe(df)
-                    include = st.checkbox("Include above table in PDF", key=f"table_{unique_prefix}")
-                    if include:
+                    try:
+                        st.dataframe(df)
+                    except Exception as e:
+                        st.error(f"❌ Error displaying table: {e}")
+                        continue
+                    if st.checkbox("Include above table in PDF", key=f"table_{unique_prefix}_{j}"):
                         fig, ax = plt.subplots(figsize=(len(df.columns)*1.2, len(df)*0.5 + 1))
                         ax.axis("off")
                         tbl = ax.table(cellText=df.values, colLabels=df.columns, loc='center', cellLoc='left')
@@ -102,8 +119,7 @@ if uploaded_file:
                 df = render_map_table(section["rows"])
                 st.markdown(f"**{header}**")
                 st.dataframe(df)
-                include = st.checkbox("Include map table in PDF", key=f"map_table_{unique_prefix}")
-                if include:
+                if st.checkbox("Include map table in PDF", key=f"map_table_{unique_prefix}"):
                     fig, ax = plt.subplots(figsize=(len(df.columns)*1.2, len(df)*0.5 + 1))
                     ax.axis("off")
                     tbl = ax.table(cellText=df.values, colLabels=df.columns, loc='center', cellLoc='left')
@@ -116,20 +132,17 @@ if uploaded_file:
                     pdf_buffers.append(buf)
             elif s_type == "pie_chart":
                 st.markdown(f"**{header}**")
-                pie_buf = render_pie_chart(section["values"], header, chart_id=unique_prefix)
-                include = st.checkbox("Include pie chart in PDF", key=f"pie_chart_{unique_prefix}")
-                if include:
+                pie_buf = render_pie_chart(section["values"])
+                if st.checkbox("Include pie chart in PDF", key=f"pie_chart_{unique_prefix}"):
                     pdf_buffers.append(pie_buf)
             elif s_type == "stacked_bar_chart":
                 st.markdown(f"**{header}**")
-                bar_buf = render_stacked_bar(section["data"], section["series"], header, chart_id=unique_prefix)
-                include = st.checkbox("Include bar chart in PDF", key=f"bar_chart_{unique_prefix}")
-                if include:
+                bar_buf = render_stacked_bar(section["data"], section["series"])
+                if st.checkbox("Include bar chart in PDF", key=f"bar_chart_{unique_prefix}"):
                     pdf_buffers.append(bar_buf)
             elif s_type == "separator":
                 st.markdown("---")
-                include = st.checkbox("Include divider in PDF", key=f"separator_{unique_prefix}")
-                if include:
+                if st.checkbox("Include divider in PDF", key=f"separator_{unique_prefix}"):
                     sep_buf = BytesIO()
                     fig, ax = plt.subplots(figsize=(6, 0.2))
                     ax.axis("off")
