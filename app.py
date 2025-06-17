@@ -9,7 +9,6 @@ from PIL import Image
 # ---------- Sanitization ----------
 
 def sanitize_text(text):
-    """Ensure text is safely encodable in latin-1 (used by FPDF)."""
     if isinstance(text, str):
         return text.encode("latin-1", errors="replace").decode("latin-1")
     return str(text)
@@ -22,9 +21,6 @@ def save_chart_as_image(fig):
     buf.seek(0)
     return buf
 
-def add_text_to_pdf(text):
-    st.session_state.pdf_contents.append({"type": "text", "content": sanitize_text(text)})
-
 def add_image_to_pdf(image_buf):
     st.session_state.pdf_contents.append({"type": "image", "content": image_buf})
 
@@ -34,20 +30,36 @@ def generate_pdf():
     pdf.set_font("Arial", size=12)
 
     for item in st.session_state.pdf_contents:
-        if item["type"] == "text":
-            pdf.add_page()
-            pdf.multi_cell(0, 10, item["content"])
-        elif item["type"] == "image":
+        if item["type"] == "image":
             pdf.add_page()
             img = Image.open(item["content"])
-            temp_path = "/tmp/tmp_chart.png"
+            temp_path = "/tmp/tmp_table_chart.png"
             img.save(temp_path)
             pdf.image(temp_path, x=10, y=20, w=180)
 
-    # ✅ Safe encoding
     return pdf.output(dest="S").encode("latin-1", errors="replace")
 
-# ---------- Renderers ----------
+# ---------- Table Image Renderer ----------
+
+def df_to_image(df, title=None):
+    fig, ax = plt.subplots(figsize=(min(20, len(df.columns)*1.5), min(1 + 0.5*len(df), 20)))
+    ax.axis('off')
+    table = ax.table(
+        cellText=df.values,
+        colLabels=df.columns,
+        cellLoc='center',
+        loc='center'
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 1.2)
+
+    if title:
+        plt.title(sanitize_text(title), fontsize=12, pad=20)
+
+    return save_chart_as_image(fig)
+
+# ---------- Section Renderers ----------
 
 def render_table(section, sheet_idx, sec_idx):
     for entry_idx, entry in enumerate(section.get("data", [])):
@@ -63,13 +75,14 @@ def render_table(section, sheet_idx, sec_idx):
             }
             table_data.append(row_data)
 
+        df = pd.DataFrame(table_data)
         if header:
             st.markdown(f"**{sanitize_text(header)}**")
-        df = pd.DataFrame(table_data)
         st.dataframe(df, use_container_width=True)
 
         if st.button("➕ Add Table to PDF", key=f"table_{sheet_idx}_{sec_idx}_{entry_idx}"):
-            add_text_to_pdf(df.to_string(index=False))
+            image_buf = df_to_image(df, title=header)
+            add_image_to_pdf(image_buf)
 
 
 def render_map_table(section, sheet_idx, sec_idx):
@@ -77,8 +90,9 @@ def render_map_table(section, sheet_idx, sec_idx):
     df = pd.DataFrame([{sanitize_text(r["name"]): sanitize_text(r["v"])} for r in rows])
     st.dataframe(df, use_container_width=True)
 
-    if st.button("➕ Add Map Table to PDF", key=f"map_{sheet_idx}_{sec_idx}"):
-        add_text_to_pdf(df.to_string(index=False))
+    if st.button("➕ Add Map Table to PDF", key=f"maptable_{sheet_idx}_{sec_idx}"):
+        image_buf = df_to_image(df, title=section.get("header", ""))
+        add_image_to_pdf(image_buf)
 
 
 def render_pie_chart(section, sheet_idx, sec_idx):
@@ -135,7 +149,8 @@ def render_section(section, sheet_idx, sec_idx):
     elif sec_type == "separator":
         st.markdown("---")
         if st.button("➕ Add Divider to PDF", key=f"sep_{sheet_idx}_{sec_idx}"):
-            add_text_to_pdf("\n----------------------------\n")
+            image_buf = df_to_image(pd.DataFrame([["-----------------------------"]]), title="Divider")
+            add_image_to_pdf(image_buf)
     else:
         st.warning(f"Unsupported section type: {sec_type}")
 
