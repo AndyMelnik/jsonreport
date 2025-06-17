@@ -33,29 +33,35 @@ def generate_pdf():
         if item["type"] == "image":
             pdf.add_page()
             img = Image.open(item["content"])
-            temp_path = "/tmp/tmp_table_chart.png"
-            img.save(temp_path)
-            pdf.image(temp_path, x=10, y=20, w=180)
+            tmp_path = "/tmp/tmp_image.png"
+            img.save(tmp_path)
+            pdf.image(tmp_path, x=10, y=20, w=180)
 
     return pdf.output(dest="S").encode("latin-1", errors="replace")
 
 # ---------- Table Image Renderer ----------
 
 def df_to_image(df, title=None):
-    fig, ax = plt.subplots(figsize=(min(20, len(df.columns)*1.5), min(1 + 0.5*len(df), 20)))
+    num_rows, num_cols = df.shape
+    fig_width = min(20, max(6, num_cols * 1.2))
+    fig_height = min(20, max(3, num_rows * 0.4))
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     ax.axis('off')
+
     table = ax.table(
         cellText=df.values,
         colLabels=df.columns,
         cellLoc='center',
         loc='center'
     )
+
     table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1.2, 1.2)
+    table.set_fontsize(8)
+    table.scale(0.8, 0.8)
 
     if title:
-        plt.title(sanitize_text(title), fontsize=12, pad=20)
+        plt.title(sanitize_text(title), fontsize=10, pad=16)
 
     return save_chart_as_image(fig)
 
@@ -149,8 +155,8 @@ def render_section(section, sheet_idx, sec_idx):
     elif sec_type == "separator":
         st.markdown("---")
         if st.button("➕ Add Divider to PDF", key=f"sep_{sheet_idx}_{sec_idx}"):
-            image_buf = df_to_image(pd.DataFrame([["-----------------------------"]]), title="Divider")
-            add_image_to_pdf(image_buf)
+            df = pd.DataFrame([["----------------------------"]], columns=[" "])
+            add_image_to_pdf(df_to_image(df, title="Divider"))
     else:
         st.warning(f"Unsupported section type: {sec_type}")
 
