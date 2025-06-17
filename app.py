@@ -6,14 +6,15 @@ from fpdf import FPDF
 from io import BytesIO
 from PIL import Image
 
-# ---------- Helpers ----------
+# ---------- Sanitize ----------
 
-def sanitize_text(text, encoding="latin-1", replacement="?"):
+def sanitize_text(text):
+    """Replace unsupported characters with '?' for Latin-1 compatibility."""
     if isinstance(text, str):
-        return text.encode(encoding, errors="replace").decode(encoding).replace("�", replacement)
+        return text.encode("latin-1", errors="replace").decode("latin-1")
     return str(text)
 
-# ---------- PDF Management ----------
+# ---------- PDF Utilities ----------
 
 def save_chart_as_image(fig):
     buf = BytesIO()
@@ -22,11 +23,11 @@ def save_chart_as_image(fig):
     return buf
 
 def add_text_to_pdf(text):
-    safe_text = sanitize_text(text)
-    st.session_state.pdf_contents.append({"type": "text", "content": safe_text})
+    cleaned = sanitize_text(text)
+    st.session_state.pdf_contents.append({"type": "text", "content": cleaned})
 
-def add_image_to_pdf(image_buf):
-    st.session_state.pdf_contents.append({"type": "image", "content": image_buf})
+def add_image_to_pdf(img_buf):
+    st.session_state.pdf_contents.append({"type": "image", "content": img_buf})
 
 def generate_pdf():
     pdf = FPDF()
@@ -40,46 +41,49 @@ def generate_pdf():
         elif item["type"] == "image":
             pdf.add_page()
             img = Image.open(item["content"])
-            temp_path = "/tmp/img.png"
+            temp_path = "/tmp/temp_chart.png"
             img.save(temp_path)
             pdf.image(temp_path, x=10, y=20, w=180)
 
     return pdf.output(dest="S").encode("latin-1", errors="replace")
 
-# ---------- Section Renderers ----------
+# ---------- Renderers ----------
 
-def render_table(section, sheet_idx, sec_idx):
-    for entry_idx, entry in enumerate(section.get("data", [])):
+def render_table(section, sheet_i, sec_i):
+    for entry_i, entry in enumerate(section.get("data", [])):
         header = entry.get("header")
         rows = entry.get("rows", [])
         columns = section.get("columns", [])
 
         table_data = []
         for row in rows:
-            table_data.append({
-                (col["title"] or col["field"]): row.get(col["field"], {}).get("v", "")
+            row_data = {
+                sanitize_text(col.get("title") or col["field"]): sanitize_text(row.get(col["field"], {}).get("v", ""))
                 for col in columns
-            })
+            }
+            table_data.append(row_data)
 
         if header:
             st.markdown(f"**{sanitize_text(header)}**")
         df = pd.DataFrame(table_data)
         st.dataframe(df, use_container_width=True)
 
-        if st.button("➕ Add Table to PDF", key=f"table_{sheet_idx}_{sec_idx}_{entry_idx}"):
+        if st.button("➕ Add Table to PDF", key=f"table_{sheet_i}_{sec_i}_{entry_i}"):
             add_text_to_pdf(df.to_string(index=False))
 
 
-def render_map_table(section, sheet_idx, sec_idx):
-    df = pd.DataFrame([{r["name"]: r["v"]} for r in section.get("rows", [])])
+def render_map_table(section, sheet_i, sec_i):
+    rows = section.get("rows", [])
+    df = pd.DataFrame([{sanitize_text(r["name"]): sanitize_text(r["v"])} for r in rows])
     st.dataframe(df, use_container_width=True)
-    if st.button("➕ Add Map Table to PDF", key=f"maptable_{sheet_idx}_{sec_idx}"):
+
+    if st.button("➕ Add Map Table to PDF", key=f"map_{sheet_i}_{sec_i}"):
         add_text_to_pdf(df.to_string(index=False))
 
 
-def render_pie_chart(section, sheet_idx, sec_idx):
+def render_pie_chart(section, sheet_i, sec_i):
     values = section.get("values", [])
-    labels = [v["title"] for v in values]
+    labels = [sanitize_text(v["title"]) for v in values]
     sizes = [v["raw"] for v in values]
     colors = [v.get("color") for v in values]
 
@@ -88,14 +92,14 @@ def render_pie_chart(section, sheet_idx, sec_idx):
     ax.axis("equal")
     st.pyplot(fig)
 
-    if st.button("➕ Add Pie Chart to PDF", key=f"pie_{sheet_idx}_{sec_idx}"):
+    if st.button("➕ Add Pie Chart to PDF", key=f"pie_{sheet_i}_{sec_i}"):
         add_image_to_pdf(save_chart_as_image(fig))
 
 
-def render_stacked_bar_chart(section, sheet_idx, sec_idx):
+def render_stacked_bar_chart(section, sheet_i, sec_i):
     data = section.get("data", [])
     series = section.get("series", [])
-    x_labels = [item["x"]["v"] for item in data]
+    x_labels = [sanitize_text(item["x"]["v"]) for item in data]
     bar_data = {
         s["field"]: [item["bars"][s["field"]]["raw"] for item in data] for s in series
     }
@@ -105,51 +109,55 @@ def render_stacked_bar_chart(section, sheet_idx, sec_idx):
     bottom = None
     for i, s in enumerate(series):
         values = df[s["field"]]
-        ax.bar(df.index, values, label=s["title"], color=s["color"], bottom=bottom)
+        ax.bar(df.index, values, label=sanitize_text(s["title"]), color=s["color"], bottom=bottom)
         bottom = values if bottom is None else bottom + values
 
-    ax.set_ylabel(section.get("y_axis", {}).get("label", ""))
-    ax.set_title(section.get("header", "Stacked Bar Chart"))
+    ax.set_ylabel(sanitize_text(section.get("y_axis", {}).get("label", "")))
+    ax.set_title(sanitize_text(section.get("header", "Stacked Bar Chart")))
     ax.legend()
     st.pyplot(fig)
 
-    if st.button("➕ Add Stacked Bar Chart to PDF", key=f"stackbar_{sheet_idx}_{sec_idx}"):
+    if st.button("➕ Add Stacked Bar Chart to PDF", key=f"stack_{sheet_i}_{sec_i}"):
         add_image_to_pdf(save_chart_as_image(fig))
 
 
-def render_section(section, sheet_idx, sec_idx):
-    t = section.get("type")
-    if t == "table":
-        render_table(section, sheet_idx, sec_idx)
-    elif t == "map_table":
-        render_map_table(section, sheet_idx, sec_idx)
-    elif t == "pie_chart":
-        render_pie_chart(section, sheet_idx, sec_idx)
-    elif t == "stacked_bar_chart":
-        render_stacked_bar_chart(section, sheet_idx, sec_idx)
-    elif t == "separator":
+def render_section(section, sheet_i, sec_i):
+    st.markdown(f"---")
+    sec_type = section.get("type")
+    if sec_type == "table":
+        render_table(section, sheet_i, sec_i)
+    elif sec_type == "map_table":
+        render_map_table(section, sheet_i, sec_i)
+    elif sec_type == "pie_chart":
+        render_pie_chart(section, sheet_i, sec_i)
+    elif sec_type == "stacked_bar_chart":
+        render_stacked_bar_chart(section, sheet_i, sec_i)
+    elif sec_type == "separator":
         st.markdown("---")
-        if st.button("➕ Add Divider to PDF", key=f"sep_{sheet_idx}_{sec_idx}"):
+        if st.button("➕ Add Divider to PDF", key=f"sep_{sheet_i}_{sec_i}"):
             add_text_to_pdf("\n----------------------------\n")
     else:
-        st.warning(f"Unsupported section type: {t}")
+        st.warning(f"Unsupported section type: {sec_type}")
 
-def render_sheet(sheet, sheet_idx):
-    st.header(f"📄 {sanitize_text(sheet.get('header'))}")
-    for sec_idx, section in enumerate(sheet.get("sections", [])):
-        if header := section.get("header"):
+
+def render_sheet(sheet, sheet_i):
+    st.header(f"📄 {sanitize_text(sheet.get('header', f'Sheet {sheet_i+1}'))}")
+    for sec_i, section in enumerate(sheet.get("sections", [])):
+        header = section.get("header")
+        if header:
             st.subheader(sanitize_text(header))
-        render_section(section, sheet_idx, sec_idx)
+        render_section(section, sheet_i, sec_i)
+
 
 def render_report(data):
-    rpt = data.get("report", {})
-    st.title(sanitize_text(rpt.get("title", "Report")))
-    st.markdown(f"**Created:** {sanitize_text(rpt.get('created'))}")
-    st.markdown(f"**Report ID:** {sanitize_text(rpt.get('id'))}")
-    tf = rpt.get("time_filter", {})
+    report = data.get("report", {})
+    st.title(sanitize_text(report.get("title", "Report")))
+    st.markdown(f"**Created:** {sanitize_text(report.get('created'))}")
+    st.markdown(f"**Report ID:** {sanitize_text(report.get('id'))}")
+    tf = report.get("time_filter", {})
     st.markdown(f"**Time Filter:** {tf.get('from')} – {tf.get('to')} | Weekdays: {tf.get('weekdays')}")
 
-    for i, sheet in enumerate(rpt.get("sheets", [])):
+    for i, sheet in enumerate(report.get("sheets", [])):
         render_sheet(sheet, i)
 
 # ---------- Main ----------
@@ -161,7 +169,7 @@ def main():
         st.session_state.pdf_contents = []
 
     st.sidebar.title("📁 Upload JSON Report")
-    uploaded_file = st.sidebar.file_uploader("Upload a JSON file", type="json")
+    uploaded_file = st.sidebar.file_uploader("Upload a JSON file", type=["json"])
 
     if uploaded_file:
         try:
@@ -170,8 +178,7 @@ def main():
 
             if st.session_state.pdf_contents:
                 pdf_bytes = generate_pdf()
-                if pdf_bytes:
-                    st.download_button("📥 Download PDF Report", pdf_bytes, file_name="report.pdf", mime="application/pdf")
+                st.download_button("📥 Download PDF Report", pdf_bytes, file_name="report.pdf", mime="application/pdf")
         except Exception as e:
             st.error(f"Failed to parse JSON: {e}")
     else:
