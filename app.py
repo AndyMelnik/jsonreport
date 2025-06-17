@@ -115,7 +115,7 @@ if uploaded_file:
             doc = SimpleDocTemplate(tmpfile.name, pagesize=A4)
             story = []
             for img_buf in pdf_elements:
-                img = RLImage(img_buf, width=6.5*inch, preserveAspectRatio=True)
+                img = RLImage(img_buf, width=6.5*inch)
                 story.append(img)
                 story.append(Spacer(1, 0.2 * inch))
             doc.build(story)
