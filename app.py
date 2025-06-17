@@ -5,8 +5,11 @@ import matplotlib.pyplot as plt
 from fpdf import FPDF
 from io import BytesIO
 from PIL import Image
+import os
 
 # ---------- PDF Utility Functions ----------
+
+FONT_PATH = "DejaVuSans.ttf"
 
 def save_chart_as_image(fig):
     buf = BytesIO()
@@ -24,10 +27,17 @@ def generate_pdf():
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
 
+    # Register a Unicode font
+    if not os.path.exists(FONT_PATH):
+        st.error(f"Font file '{FONT_PATH}' not found.")
+        return None
+
+    pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
+    pdf.set_font("DejaVu", size=12)
+
     for item in st.session_state.pdf_contents:
         if item["type"] == "text":
             pdf.add_page()
-            pdf.set_font("Arial", size=12)
             pdf.multi_cell(0, 10, item["content"])
         elif item["type"] == "image":
             pdf.add_page()
@@ -36,9 +46,8 @@ def generate_pdf():
             img.save(temp_path)
             pdf.image(temp_path, x=10, y=20, w=180)
 
-    output = BytesIO()
-    pdf.output(output)
-    return output
+    # Encode as bytes for download
+    return pdf.output(dest="S").encode("utf-8")
 
 # ---------- Section Renderers ----------
 
@@ -62,10 +71,7 @@ def render_table(section, sheet_index, section_index):
         df = pd.DataFrame(table_data)
         st.dataframe(df, use_container_width=True)
 
-        if st.button(
-            f"➕ Add Table to PDF: {header or 'Unnamed'}",
-            key=f"btn_table_{sheet_index}_{section_index}_{entry_index}"
-        ):
+        if st.button(f"➕ Add Table to PDF: {header or 'Unnamed'}", key=f"btn_table_{sheet_index}_{section_index}_{entry_index}"):
             add_text_to_pdf(df.to_string(index=False))
 
 
@@ -177,7 +183,8 @@ def main():
 
             if st.session_state.pdf_contents:
                 pdf_data = generate_pdf()
-                st.download_button("📥 Download PDF Report", pdf_data.getvalue(), file_name="report.pdf", mime="application/pdf")
+                if pdf_data:
+                    st.download_button("📥 Download PDF Report", pdf_data, file_name="report.pdf", mime="application/pdf")
         except Exception as e:
             st.error(f"Failed to parse JSON: {e}")
     else:
